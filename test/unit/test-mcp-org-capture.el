@@ -213,5 +213,75 @@ Regression test for the %? regex."
   (let ((result (mcp-server-emacs-tools-org-capture--inject-immediate-finish nil)))
     (should (eq (plist-get result :immediate-finish) t))))
 
+(ert-deftest mcp-test-org-capture-template-text-prompt-from-vars ()
+  "Template mode substitutes %^{Title} from template_variables."
+  (mcp-test-with-org-fixture "sample-notes.org" path
+    (let ((org-capture-templates
+           `(("v" "Vars" entry (file ,path) "* TODO %^{Title}\n%?"))))
+      (let* ((json (mcp-server-emacs-tools-org-capture--handler
+                    '((template_key . "v")
+                      (template_variables . ((Title . "Buy groceries"))))))
+             (result (let ((json-object-type 'alist)) (json-read-from-string json))))
+        (should-not (alist-get 'error result))
+        (with-temp-buffer
+          (insert-file-contents path)
+          (should (string-match-p "TODO Buy groceries" (buffer-string))))))))
+
+(ert-deftest mcp-test-org-capture-template-injects-immediate-finish ()
+  "Template mode does not block even when :immediate-finish t is absent."
+  (mcp-test-with-org-fixture "sample-notes.org" path
+    (let ((org-capture-templates
+           `(("n" "No-finish" entry (file ,path) "* TODO no-finish-test"))))
+      (let* ((json (mcp-server-emacs-tools-org-capture--handler
+                    '((template_key . "n"))))
+             (result (let ((json-object-type 'alist)) (json-read-from-string json))))
+        (should-not (alist-get 'error result))
+        (with-temp-buffer
+          (insert-file-contents path)
+          (should (string-match-p "no-finish-test" (buffer-string))))))))
+
+(ert-deftest mcp-test-org-capture-template-tags-applied-post-capture ()
+  "tags arg is applied post-capture even when %^g is in the template."
+  (mcp-test-with-org-fixture "sample-notes.org" path
+    (let ((org-capture-templates
+           `(("g" "Tagged" entry (file ,path) "* TODO task%^g"))))
+      (let* ((json (mcp-server-emacs-tools-org-capture--handler
+                    `((template_key . "g")
+                      (tags . ["work" "urgent"]))))
+             (result (let ((json-object-type 'alist)) (json-read-from-string json))))
+        (should-not (alist-get 'error result))
+        (with-temp-buffer
+          (insert-file-contents path)
+          (should (string-match-p ":work:" (buffer-string)))
+          (should (string-match-p ":urgent:" (buffer-string))))))))
+
+(ert-deftest mcp-test-org-capture-template-scheduled-applied-post-capture ()
+  "scheduled arg is applied post-capture when template has %^t."
+  (mcp-test-with-org-fixture "sample-notes.org" path
+    (let ((org-capture-templates
+           `(("s" "Sched" entry (file ,path) "* TODO sched-test%^t"))))
+      (let* ((json (mcp-server-emacs-tools-org-capture--handler
+                    `((template_key . "s")
+                      (scheduled . "<2026-04-22 Wed>"))))
+             (result (let ((json-object-type 'alist)) (json-read-from-string json))))
+        (should-not (alist-get 'error result))
+        (with-temp-buffer
+          (insert-file-contents path)
+          (should (string-match-p "SCHEDULED:" (buffer-string))))))))
+
+(ert-deftest mcp-test-org-capture-template-property-from-prompt ()
+  "Property from %^{NAME}p is set post-capture via org-set-property."
+  (mcp-test-with-org-fixture "sample-notes.org" path
+    (let ((org-capture-templates
+           `(("p" "Prop" entry (file ,path) "* TODO prop-test %^{effort}p"))))
+      (let* ((json (mcp-server-emacs-tools-org-capture--handler
+                    '((template_key . "p")
+                      (template_variables . ((effort . "2h"))))))
+             (result (let ((json-object-type 'alist)) (json-read-from-string json))))
+        (should-not (alist-get 'error result))
+        (with-temp-buffer
+          (insert-file-contents path)
+          (should (string-match-p "effort.*2h\\|2h.*effort" (buffer-string))))))))
+
 (provide 'test-mcp-org-capture)
 ;;; test-mcp-org-capture.el ends here

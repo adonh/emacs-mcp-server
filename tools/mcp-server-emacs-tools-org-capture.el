@@ -143,42 +143,87 @@ template) is not treated as the cursor marker."
     (append options '(:immediate-finish t))))
 
 (defun mcp-server-emacs-tools-org-capture--template-mode (args)
-  "Run org-capture with a template from ARGS.
-Always finalizes synchronously; `immediate_finish' arg is accepted but ignored
-because MCP calls are non-interactive.  The `content' arg is placed at the
-template's `%?' cursor marker (when present) and also made available as `%i'."
-  (let* ((key (alist-get 'template_key args))
-         (content (alist-get 'content args))
-         (entry (and key (assoc key org-capture-templates)))
-         (modified-entry
-          (and entry content (stringp (nth 4 entry))
-               (append (seq-take entry 4)
-                       (list (mcp-server-emacs-tools-org-capture--substitute-cursor
-                              (nth 4 entry) content))
-                       (nthcdr 5 entry))))
-         (modified-templates
-          (if modified-entry
-              (cons modified-entry
-                    (seq-remove (lambda (e) (equal (car-safe e) key))
-                                org-capture-templates))
-            org-capture-templates))
-         (org-capture-templates modified-templates)
-         (org-capture-initial (or content ""))
+  "Run org-capture with a template from ARGS, fully non-interactively.
+Always injects `:immediate-finish t' and pre-substitutes all %^ markers.
+Post-capture, applies `tags', `scheduled', `deadline', and any property
+prompts via org APIs."
+  (let* ((key               (alist-get 'template_key args))
+         (content           (alist-get 'content args))
+         (template-vars     (alist-get 'template_variables args))
+         (tags              (alist-get 'tags args))
+         (scheduled         (alist-get 'scheduled args))
+         (deadline          (alist-get 'deadline args))
+         (entry             (assoc key org-capture-templates))
+         (_ (unless entry (error "Template key not found: %s" key)))
+         (raw-tmpl          (if (stringp (nth 4 entry)) (nth 4 entry) ""))
+         (preproc           (mcp-server-emacs-tools-org-capture--preprocess-template-string
+                             raw-tmpl template-vars))
+         (processed-str     (car preproc))
+         (post-props        (cdr preproc))
+         (final-str         (mcp-server-emacs-tools-org-capture--substitute-cursor
+                             processed-str (or content "")))
+         (options           (mcp-server-emacs-tools-org-capture--inject-immediate-finish
+                             (nthcdr 5 entry)))
+         (modified-entry    (append (seq-take entry 4) (list final-str) options))
+         (org-capture-templates
+          (cons modified-entry
+                (seq-remove (lambda (e) (equal (car-safe e) key))
+                            org-capture-templates)))
+         (org-capture-initial          (or content ""))
          (org-capture-templates-contexts nil))
-    (save-window-excursion
-      (org-capture nil key)
-      (when (buffer-live-p (get-buffer "*Capture*"))
-        (with-current-buffer "*Capture*" (org-capture-finalize))))
-    (when (and (boundp 'org-capture-last-stored-marker)
-               (markerp org-capture-last-stored-marker))
+    (let ((prev-marker (and (boundp 'org-capture-last-stored-marker)
+                            (markerp org-capture-last-stored-marker)
+                            (marker-buffer org-capture-last-stored-marker)
+                            (copy-marker org-capture-last-stored-marker))))
+      (cl-letf (((symbol-function 'completing-read-multiple)
+                 (lambda (&rest _) nil))
+                ((symbol-function 'org-completing-read)
+                 (lambda (_prompt collection &optional _pred _req _init _hist default &rest _)
+                   (or default (and (consp collection) (car collection)) "")))
+                ((symbol-function 'org-read-date)
+                 (lambda (&rest _) (format-time-string "%Y-%m-%d")))
+                ((symbol-function 'read-string)
+                 (lambda (_prompt &optional initial &rest _) (or initial "")))
+                ((symbol-function 'org-read-property-value)
+                 (lambda (&rest _) "")))
+        (unwind-protect
+            (save-window-excursion
+              (org-capture nil key))
+          (let ((cap-buf (get-buffer "*Capture*")))
+            (when (buffer-live-p cap-buf)
+              (with-current-buffer cap-buf
+                (org-capture-kill))))))
+      (unless (and (boundp 'org-capture-last-stored-marker)
+                   (markerp org-capture-last-stored-marker)
+                   (marker-buffer org-capture-last-stored-marker)
+                   (or (null prev-marker)
+                       (not (and (eq (marker-buffer prev-marker)
+                                     (marker-buffer org-capture-last-stored-marker))
+                                 (= (marker-position prev-marker)
+                                    (marker-position org-capture-last-stored-marker))))))
+        (error "org-capture did not store a new entry"))
       (let ((marker org-capture-last-stored-marker))
         (with-current-buffer (marker-buffer marker)
           (save-excursion
             (goto-char marker)
-            (let* ((id (mcp-server-emacs-tools-org-common--promote-to-id (point-marker)))
+            (when tags
+              (org-set-tags (append tags nil)))
+            (dolist (prop post-props)
+              (when (eq (car prop) 'property)
+                (org-set-property (cadr prop) (cddr prop))))
+            (when scheduled (org-schedule nil scheduled))
+            (when deadline  (org-deadline nil deadline))
+            (when (and mcp-server-emacs-tools-org-auto-save
+                       (buffer-file-name)
+                       (buffer-modified-p))
+              (save-buffer))
+            (let* ((id  (mcp-server-emacs-tools-org-common--promote-to-id
+                         (point-marker)))
                    (file (buffer-file-name))
-                   (olp (mcp-server-emacs-tools-org-common--compute-outline-path)))
-              `((id . ,id) (file . ,file) (outline_path . ,(vconcat olp))))))))))
+                   (olp  (mcp-server-emacs-tools-org-common--compute-outline-path)))
+              `((id . ,id)
+                (file . ,file)
+                (outline_path . ,(vconcat olp))))))))))
 
 (defun mcp-server-emacs-tools-org-capture--direct-mode (args)
   "Create an entry directly from ARGS without a template."
@@ -249,9 +294,10 @@ template's `%?' cursor marker (when present) and also made available as `%i'."
  (make-mcp-server-tool
   :name "org-capture"
   :title "Org Capture"
-  :description "Create a new org entry.  Prefer `template_key' with an existing user template (see org-list-templates) because it respects user-configured targets and formatting.  Use direct mode (`file' + `title' + optional `outline_path'/`body'/`todo_state'/`tags') only when no template fits.  Before setting tags, check org-list-tags to avoid near-duplicates."
+  :description "Create a new org entry.  Prefer `template_key' with an existing user template (see org-list-templates, which includes a `prompts' field listing required %^{NAME} variables).  Supply `template_variables' as an object mapping each prompt name to its value (e.g. {\"Title\": \"Buy milk\"}).  For tag prompts use the `tags' arg; for date prompts use `scheduled'/`deadline'.  Use direct mode (`file' + `title') only when no template fits."
   :input-schema '((type . "object")
                   (properties . ((template_key . ((type . "string")))
+                                 (template_variables . ((type . "object")))
                                  (content . ((type . "string")))
                                  (file . ((type . "string")))
                                  (outline_path . ((type . "array")
