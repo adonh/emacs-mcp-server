@@ -14,6 +14,104 @@
 (require 'json)
 (require 'seq)
 
+(defconst mcp-server-emacs-tools-org-capture--marker-regexp
+  (concat "\\(%%\\)"
+          "\\|%\\^\\(?:"
+          "{\\([^|}]*\\)\\(?:|\\([^}]*\\)\\)?}"
+          "\\([gGtTuUCLp]?\\)"
+          "\\|\\([gGtTuUCLp]\\)\\)")
+  "Regexp matching %^ interactive markers and %% escapes in org-capture templates.")
+
+(defun mcp-server-emacs-tools-org-capture--preprocess-template-string (tmpl vars)
+  "Pre-substitute all %^ interactive markers in TMPL.
+VARS is an alist of (SYMBOL . value) pairs; SYMBOL names match the NAME
+in %^{NAME} markers (compared via `intern').
+Returns (PROCESSED-STRING . POST-PROPS) where POST-PROPS is an alist of
+\((property NAME . VALUE) ...) entries for post-capture application.
+
+%^{NAME} text prompts are replaced inline with VARS value, first pipe
+option, or \"\".  Named date prompts (%^{NAME}t etc.) are replaced with
+VARS value or \"\".  Unnamed date prompts (%^t etc.) and tag prompts
+(%^g/%^G) are removed from the string.  %^{NAME}p property prompts are
+removed and recorded in POST-PROPS.  %^C/%^L clipboard prompts are
+replaced with VARS value or \"\".  %\\N back-references are resolved to
+the Nth collected named-prompt value (1-based).  %%^ escapes are kept
+verbatim."
+  (let ((result "")
+        (start 0)
+        (named-values '())
+        (post-props '()))
+    (while (string-match mcp-server-emacs-tools-org-capture--marker-regexp tmpl start)
+      (setq result (concat result (substring tmpl start (match-beginning 0))))
+      (cond
+       ;; %% escape: keep verbatim
+       ((match-beginning 1)
+        (setq result (concat result "%%"))
+        (setq start (match-end 0)))
+       (t
+        ;; Save match-end before any internal string-match calls clobber it.
+        (let* ((match-end-pos (match-end 0))
+               (name    (and (match-beginning 2)
+                             (match-string-no-properties 2 tmpl)))
+               (opts    (and (match-beginning 3)
+                             (match-string-no-properties 3 tmpl)))
+               (suf4    (and (match-beginning 4)
+                             (let ((s (match-string-no-properties 4 tmpl)))
+                               (when (> (length s) 0) s))))
+               (suf5    (and (match-beginning 5)
+                             (match-string-no-properties 5 tmpl)))
+               (suffix  (or suf4 suf5 ""))
+               (raw-val (let ((v (and name
+                                       (alist-get (intern name) vars 'mcp-server-emacs-tools-org-capture--absent))))
+                           (if (and (not (eq v 'mcp-server-emacs-tools-org-capture--absent))
+                                    v
+                                    (not (eq v :null)))
+                               (format "%s" v)
+                             (or (and opts (car (split-string opts "|" t)))
+                                 "")))))
+          (pcase suffix
+            ;; Text prompt (no suffix) - substitute inline
+            (""
+             (push raw-val named-values)
+             (setq result (concat result raw-val)))
+            ;; Tag prompts - remove from string
+            ((or "g" "G") nil)
+            ;; Named date prompts - substitute inline; unnamed - remove
+            ((or "t" "T" "u" "U")
+             (when name
+               (setq result (concat result raw-val))))
+            ;; Property prompt - remove; record for post-capture
+            ("p"
+             (when name
+               (push (cons 'property (cons name raw-val)) post-props)))
+            ;; Clipboard / link - substitute inline
+            ((or "C" "L")
+             (setq result (concat result raw-val))))
+          (setq start match-end-pos)))))
+    ;; Append remaining text
+    (setq result (concat result (substring tmpl start)))
+    ;; Resolve %\N back-references (1-based, into named-values collected in order)
+    (let ((refs (nreverse named-values))
+          (ref-result "")
+          (ref-start 0))
+      (while (string-match "%\\\\\\([0-9]+\\)" result ref-start)
+        (let* ((match-start (match-beginning 0))
+               (n (string-to-number (match-string 1 result)))
+               (escaped (and (> match-start 0)
+                             (= (aref result (1- match-start)) ?%))))
+          (if escaped
+              (progn
+                (setq ref-result (concat ref-result
+                                         (substring result ref-start (match-end 0))))
+                (setq ref-start (match-end 0)))
+            (let ((val (or (nth (1- n) refs) "")))
+              (setq ref-result (concat ref-result
+                                       (substring result ref-start match-start)
+                                       val))
+              (setq ref-start (match-end 0))))))
+      (setq result (concat ref-result (substring result ref-start))))
+    (cons result (nreverse post-props))))
+
 (defun mcp-server-emacs-tools-org-capture--substitute-cursor (template content)
   "Return TEMPLATE with the first unescaped `%?' replaced by CONTENT.
 MCP calls are non-interactive, so the `%?' cursor marker is pre-filled
