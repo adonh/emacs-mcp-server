@@ -136,6 +136,12 @@ template) is not treated as the cursor marker."
           (setq done t))))
       (or result template))))
 
+(defun mcp-server-emacs-tools-org-capture--inject-immediate-finish (options)
+  "Return OPTIONS plist with `:immediate-finish t' added when absent."
+  (if (plist-member options :immediate-finish)
+      options
+    (append options '(:immediate-finish t))))
+
 (defun mcp-server-emacs-tools-org-capture--template-mode (args)
   "Run org-capture with a template from ARGS.
 Always finalizes synchronously; `immediate_finish' arg is accepted but ignored

@@ -194,5 +194,24 @@ Regression test for the %? regex."
          (processed (car result)))
     (should (string= processed "heading"))))
 
+(ert-deftest mcp-test-org-capture-inject-immediate-finish-when-absent ()
+  ":immediate-finish t is added when option list lacks it."
+  (let ((result (mcp-server-emacs-tools-org-capture--inject-immediate-finish
+                 '(:prepend t))))
+    (should (eq (plist-get result :immediate-finish) t))
+    (should (eq (plist-get result :prepend) t))))
+
+(ert-deftest mcp-test-org-capture-inject-immediate-finish-already-present ()
+  "When :immediate-finish is already present, it is not duplicated."
+  (let* ((opts '(:immediate-finish t :prepend t))
+         (result (mcp-server-emacs-tools-org-capture--inject-immediate-finish opts)))
+    ;; Count occurrences of :immediate-finish key in the plist
+    (should (= 1 (cl-count :immediate-finish result)))))
+
+(ert-deftest mcp-test-org-capture-inject-immediate-finish-empty-opts ()
+  "Empty option list gains :immediate-finish t."
+  (let ((result (mcp-server-emacs-tools-org-capture--inject-immediate-finish nil)))
+    (should (eq (plist-get result :immediate-finish) t))))
+
 (provide 'test-mcp-org-capture)
 ;;; test-mcp-org-capture.el ends here
