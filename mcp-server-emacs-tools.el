@@ -83,9 +83,16 @@ TOOL-NAME can be a string or symbol."
 ;; Set up the filter for mcp-server-tools
 (setq mcp-server-tools-filter #'mcp-server-emacs-tools--tool-enabled-p)
 
-;; Load all tool modules (they self-register)
+;; Load all tool modules (they self-register).
+;; Each tool is loaded independently so a single failure does not prevent
+;; the remaining tools from registering.
 (dolist (tool-spec mcp-server-emacs-tools--available)
-  (require (cdr tool-spec)))
+  (condition-case err
+      (require (cdr tool-spec))
+    (error
+     (message "MCP: Failed to load tool `%s' (%s): %s"
+              (car tool-spec) (cdr tool-spec)
+              (error-message-string err)))))
 
 (provide 'mcp-server-emacs-tools)
 
