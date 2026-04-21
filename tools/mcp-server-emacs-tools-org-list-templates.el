@@ -66,37 +66,53 @@ possibly empty).  Returns nil for non-string inputs."
             (setq start (match-end 0))))))
       (nreverse prompts))))
 
+(defun mcp-server-emacs-tools-org-list-templates--safe-string (val)
+  "Return VAL as a plain string, or nil if VAL cannot be safely stringified.
+Strips text properties from strings.  Converts symbols via `symbol-name'.
+Returns nil for any other type to avoid calling `format' on lambdas or
+closures, which can overflow the stack when printing large environments."
+  (cond ((stringp val) (substring-no-properties val))
+        ((symbolp val) (symbol-name val))
+        (t nil)))
+
 (defun mcp-server-emacs-tools-org-list-templates--template-to-alist (tmpl)
   "Convert TMPL (an entry from org-capture-templates) to an alist.
 For `file+olp' and `file+olp+datetree' targets, the full outline path
 is returned as a vector under `target_outline_path'; `target_heading'
-is kept as the first path component for backward compatibility."
-  (let* ((key (nth 0 tmpl))
-         (description (nth 1 tmpl))
-         (kind (nth 2 tmpl))
-         (target (nth 3 tmpl))
-         (target-type (when (listp target) (car target)))
-         (target-file (when (and (listp target) (>= (length target) 2))
-                        (let ((f (nth 1 target)))
-                          (if (stringp f) f (format "%S" f)))))
-         (target-olp
-          (pcase target-type
-            ((or 'file+headline 'file+olp 'file+olp+datetree)
-             (let ((raw (nthcdr 2 target)))
-               (mapcar (lambda (x) (if (stringp x) x (format "%S" x))) raw)))
-            (_ nil)))
-         (target-heading (car target-olp)))
-    (let* ((raw-tmpl (nth 4 tmpl))
-           (prompts  (mcp-server-emacs-tools-org-list-templates--extract-prompts
-                      (when (stringp raw-tmpl) raw-tmpl))))
-      `((key . ,key)
-        (description . ,description)
-        (kind . ,(symbol-name (or kind 'entry)))
-        (target_type . ,(when target-type (symbol-name target-type)))
-        (target_file . ,target-file)
-        (target_heading . ,target-heading)
-        (target_outline_path . ,(vconcat target-olp))
-        (prompts . ,(vconcat prompts))))))
+is kept as the first path component for backward compatibility.
+Returns nil when the entry cannot be safely converted (e.g. group headers
+or templates with dynamic targets that cannot be serialised)."
+  (condition-case nil
+      (let* ((key         (nth 0 tmpl))
+             (description (mcp-server-emacs-tools-org-list-templates--safe-string
+                           (nth 1 tmpl)))
+             (kind        (nth 2 tmpl))
+             (target      (nth 3 tmpl))
+             (target-type (when (and (consp target) (symbolp (car target)))
+                            (car target)))
+             (target-file (when (consp target)
+                            (mcp-server-emacs-tools-org-list-templates--safe-string
+                             (nth 1 target))))
+             (target-olp
+              (pcase target-type
+                ((or 'file+headline 'file+olp 'file+olp+datetree)
+                 (delq nil
+                       (mapcar #'mcp-server-emacs-tools-org-list-templates--safe-string
+                               (nthcdr 2 target))))
+                (_ nil)))
+             (target-heading (car target-olp)))
+        (let* ((raw-tmpl (nth 4 tmpl))
+               (prompts  (mcp-server-emacs-tools-org-list-templates--extract-prompts
+                          (when (stringp raw-tmpl) raw-tmpl))))
+          `((key . ,key)
+            (description . ,description)
+            (kind . ,(if (symbolp kind) (symbol-name kind) "entry"))
+            (target_type . ,(when target-type (symbol-name target-type)))
+            (target_file . ,target-file)
+            (target_heading . ,target-heading)
+            (target_outline_path . ,(vconcat target-olp))
+            (prompts . ,(vconcat prompts)))))
+    (error nil)))
 
 (defun mcp-server-emacs-tools-org-list-templates--handler (args)
   "Handle org-list-templates tool call with ARGS."
@@ -104,15 +120,17 @@ is kept as the first path component for backward compatibility."
       (let* ((type (or (alist-get 'type args) "capture")))
         (pcase type
           ("capture"
-           (let ((templates (mapcar #'mcp-server-emacs-tools-org-list-templates--template-to-alist
-                                    (or org-capture-templates '()))))
+           (let ((templates (delq nil
+                                  (mapcar #'mcp-server-emacs-tools-org-list-templates--template-to-alist
+                                          (or org-capture-templates '())))))
              (json-encode `((templates . ,(vconcat templates))))))
           ("roam-capture"
            (if (require 'org-roam nil t)
-               (let ((templates (mapcar #'mcp-server-emacs-tools-org-list-templates--template-to-alist
-                                        (or (and (boundp 'org-roam-capture-templates)
-                                                 org-roam-capture-templates)
-                                            '()))))
+               (let ((templates (delq nil
+                                      (mapcar #'mcp-server-emacs-tools-org-list-templates--template-to-alist
+                                              (or (and (boundp 'org-roam-capture-templates)
+                                                       org-roam-capture-templates)
+                                                  '())))))
                  (json-encode `((templates . ,(vconcat templates)))))
              (json-encode `((error . "org-roam not installed")))))
           (_ (error "Unknown type: %s" type))))
