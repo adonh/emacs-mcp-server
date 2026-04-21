@@ -283,5 +283,35 @@ Regression test for the %? regex."
           (insert-file-contents path)
           (should (string-match-p "effort.*2h\\|2h.*effort" (buffer-string))))))))
 
+(ert-deftest mcp-test-org-capture-template-content-fills-first-text-prompt ()
+  "When template_variables absent, content fills the first %^{NAME} text prompt."
+  (mcp-test-with-org-fixture "sample-notes.org" path
+    (let ((org-capture-templates
+           `(("c" "Content" entry (file ,path) "* TODO %^{Title}\n%?"))))
+      (let* ((json (mcp-server-emacs-tools-org-capture--handler
+                    `((template_key . "c")
+                      (content . "Create package list"))))
+             (result (let ((json-object-type 'alist)) (json-read-from-string json))))
+        (should-not (alist-get 'error result))
+        (with-temp-buffer
+          (insert-file-contents path)
+          (should (string-match-p "TODO Create package list" (buffer-string))))))))
+
+(ert-deftest mcp-test-org-capture-template-explicit-vars-override-content ()
+  "Explicit template_variables take priority over content auto-fill."
+  (mcp-test-with-org-fixture "sample-notes.org" path
+    (let ((org-capture-templates
+           `(("c" "Content" entry (file ,path) "* TODO %^{Title}\n%?"))))
+      (let* ((json (mcp-server-emacs-tools-org-capture--handler
+                    '((template_key . "c")
+                      (template_variables . ((Title . "Explicit title")))
+                      (content . "body text"))))
+             (result (let ((json-object-type 'alist)) (json-read-from-string json))))
+        (should-not (alist-get 'error result))
+        (with-temp-buffer
+          (insert-file-contents path)
+          (should (string-match-p "TODO Explicit title" (buffer-string)))
+          (should (string-match-p "body text" (buffer-string))))))))
+
 (provide 'test-mcp-org-capture)
 ;;; test-mcp-org-capture.el ends here

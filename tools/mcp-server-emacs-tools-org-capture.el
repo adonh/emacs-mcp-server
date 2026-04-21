@@ -149,13 +149,44 @@ Post-capture, applies `tags', `scheduled', `deadline', and any property
 prompts via org APIs."
   (let* ((key               (alist-get 'template_key args))
          (content           (alist-get 'content args))
-         (template-vars     (alist-get 'template_variables args))
+         (raw-template-vars (alist-get 'template_variables args))
          (tags              (alist-get 'tags args))
          (scheduled         (alist-get 'scheduled args))
          (deadline          (alist-get 'deadline args))
          (entry             (assoc key org-capture-templates))
          (_ (unless entry (error "Template key not found: %s" key)))
          (raw-tmpl          (if (stringp (nth 4 entry)) (nth 4 entry) ""))
+         ;; When template_variables absent and content provided, absorb content
+         ;; into the first text prompt so the heading title is populated.
+         ;; This handles LLMs that pass `content' without knowing the template
+         ;; uses %^{NAME} for the heading rather than %?.
+         (template-vars
+          (or raw-template-vars
+              (and content
+                   (let ((pos 0) found)
+                     (while (and (not found)
+                                 (string-match
+                                  mcp-server-emacs-tools-org-capture--marker-regexp
+                                  raw-tmpl pos))
+                       (cond
+                        ((match-beginning 1) (setq pos (match-end 0)))
+                        (t
+                         (let* ((name (and (match-beginning 2)
+                                           (match-string-no-properties 2 raw-tmpl)))
+                                (suf4 (and (match-beginning 4)
+                                           (let ((s (match-string-no-properties
+                                                     4 raw-tmpl)))
+                                             (when (> (length s) 0) s))))
+                                (suf5 (and (match-beginning 5)
+                                           (match-string-no-properties 5 raw-tmpl))))
+                           (when (and name (not (or suf4 suf5)))
+                             (setq found `((,(intern name) . ,content))))
+                           (setq pos (match-end 0))))))
+                     found))))
+         ;; If content was absorbed into template-vars, clear it so %? stays empty
+         (content           (if (and content (not raw-template-vars) template-vars)
+                                nil
+                              content))
          (preproc           (mcp-server-emacs-tools-org-capture--preprocess-template-string
                              raw-tmpl template-vars))
          (processed-str     (car preproc))
