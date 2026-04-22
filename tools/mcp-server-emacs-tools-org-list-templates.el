@@ -11,16 +11,6 @@
 (require 'org-capture)
 (require 'json)
 
-(defconst mcp-server-emacs-tools-org-list-templates--marker-regexp
-  (concat "\\(%%\\)"
-          "\\|%\\^\\(?:"
-          "{\\([^}]*\\)}\\([gGtTuUCLp]?\\)"
-          "\\|\\([gGtTuUCLp]\\)\\)")
-  "Regexp matching %^ interactive markers and %% escapes in org-capture templates.
-Group 1: %% escape.  Group 2: full {content} of a braced prompt.
-Group 3: optional suffix letter after a braced prompt.
-Group 4: suffix letter of a bare %^G-style prompt.")
-
 (defun mcp-server-emacs-tools-org-list-templates--extract-prompts (template-string)
   "Return a list of prompt descriptor alists from TEMPLATE-STRING.
 Each descriptor has at minimum a `type' key (string).  Named prompts
@@ -28,49 +18,76 @@ also carry `name'.  Text prompts carry `completions' (a vector,
 possibly empty).  Returns nil for non-string inputs."
   (when (stringp template-string)
     (let ((prompts '())
-          (start 0))
-      (while (string-match
-              mcp-server-emacs-tools-org-list-templates--marker-regexp
-              template-string start)
-        (cond
-         ;; %% escape: skip
-         ((match-beginning 1)
-          (setq start (match-end 0)))
-         (t
-          (let* (;; Group 2: full text between { and } (e.g. "name|opt1|opt2")
-                 (content (and (match-beginning 2)
-                               (match-string-no-properties 2 template-string)))
-                 ;; Group 3: optional suffix after } (e.g. "p" in %^{name}p)
-                 (suf3    (and (match-beginning 3)
-                               (let ((s (match-string-no-properties 3 template-string)))
-                                 (when (> (length s) 0) s))))
-                 ;; Group 4: suffix for bare %^G-style prompts
-                 (suf4    (and (match-beginning 4)
-                               (match-string-no-properties 4 template-string)))
-                 (suffix  (or suf3 suf4 ""))
-                 (type    (pcase suffix
-                            ("g"          "tags_local")
-                            ("G"          "tags_global")
-                            ((or "t" "T") "date")
-                            ((or "u" "U") "date_inactive")
-                            ("p"          "property")
-                            ("C"          "clipboard")
-                            ("L"          "link")
-                            (_            "text")))
-                 ;; Split content by | to get name and completion options
-                 (parts   (when (and content (> (length content) 0))
-                            (split-string content "|" t)))
-                 (name    (car parts))
-                 (completions
-                  (when (string= type "text")
-                    (if (cdr parts) (vconcat (cdr parts)) [])))
-                 (descriptor
-                  (append
-                   `((type . ,type))
-                   (when name `((name . ,name)))
-                   (when (string= type "text") `((completions . ,completions))))))
-            (push descriptor prompts)
-            (setq start (match-end 0))))))
+          (i 0)
+          (len (length template-string)))
+      (while (< i (1- len))
+        (if (not (eq (aref template-string i) ?%))
+            (setq i (1+ i))
+          (let ((next (aref template-string (1+ i))))
+            (cond
+             ;; %% escape: skip both chars
+             ((eq next ?%)
+              (setq i (+ i 2)))
+             ;; %^ prompt
+             ((eq next ?^)
+              (setq i (+ i 2))
+              (cond
+               ;; Braced form: %^{content}[suffix]
+               ((and (< i len) (eq (aref template-string i) ?{))
+                (let ((j (1+ i)))
+                  (while (and (< j len) (not (eq (aref template-string j) ?})))
+                    (setq j (1+ j)))
+                  (when (< j len)
+                    (let* ((content (substring-no-properties template-string (1+ i) j))
+                           (after   (1+ j))
+                           (suf-c   (when (< after len) (aref template-string after)))
+                           (suffix  (when (and suf-c
+                                               (memq suf-c
+                                                     '(?g ?G ?t ?T ?u ?U ?C ?L ?p)))
+                                      (char-to-string suf-c)))
+                           (type    (pcase suffix
+                                      ("g"          "tags_local")
+                                      ("G"          "tags_global")
+                                      ((or "t" "T") "date")
+                                      ((or "u" "U") "date_inactive")
+                                      ("p"          "property")
+                                      ("C"          "clipboard")
+                                      ("L"          "link")
+                                      (_            "text")))
+                           (parts   (when (> (length content) 0)
+                                      (split-string content "|" t)))
+                           (name    (car parts))
+                           (completions
+                            (when (string= type "text")
+                              (if (cdr parts) (vconcat (cdr parts)) [])))
+                           (descriptor
+                            (append
+                             `((type . ,type))
+                             (when name `((name . ,name)))
+                             (when (string= type "text") `((completions . ,completions))))))
+                      (push descriptor prompts)
+                      (setq i (if suffix (1+ after) after))))))
+               ;; Bare form: %^[gGtTuUCLp]
+               ((and (< i len)
+                     (memq (aref template-string i)
+                           '(?g ?G ?t ?T ?u ?U ?C ?L ?p)))
+                (let* ((suffix     (char-to-string (aref template-string i)))
+                       (type       (pcase suffix
+                                     ("g"          "tags_local")
+                                     ("G"          "tags_global")
+                                     ((or "t" "T") "date")
+                                     ((or "u" "U") "date_inactive")
+                                     ("p"          "property")
+                                     ("C"          "clipboard")
+                                     ("L"          "link")
+                                     (_            "text")))
+                       (descriptor `((type . ,type))))
+                  (push descriptor prompts)
+                  (setq i (1+ i))))
+               ;; %^ not followed by { or known suffix: skip past ^
+               (t nil)))
+             ;; Other % directive: skip the %
+             (t (setq i (1+ i)))))))
       (nreverse prompts))))
 
 (defun mcp-server-emacs-tools-org-list-templates--safe-string (val)
