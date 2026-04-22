@@ -14,10 +14,12 @@
 (defconst mcp-server-emacs-tools-org-list-templates--marker-regexp
   (concat "\\(%%\\)"
           "\\|%\\^\\(?:"
-          "{\\([^|}]*\\)\\(?:|\\([^}]*\\)\\)?}"
-          "\\([gGtTuUCLp]?\\)"
+          "{\\([^}]*\\)}\\([gGtTuUCLp]?\\)"
           "\\|\\([gGtTuUCLp]\\)\\)")
-  "Regexp matching %^ interactive markers and %% escapes in org-capture templates.")
+  "Regexp matching %^ interactive markers and %% escapes in org-capture templates.
+Group 1: %% escape.  Group 2: full {content} of a braced prompt.
+Group 3: optional suffix letter after a braced prompt.
+Group 4: suffix letter of a bare %^G-style prompt.")
 
 (defun mcp-server-emacs-tools-org-list-templates--extract-prompts (template-string)
   "Return a list of prompt descriptor alists from TEMPLATE-STRING.
@@ -35,16 +37,17 @@ possibly empty).  Returns nil for non-string inputs."
          ((match-beginning 1)
           (setq start (match-end 0)))
          (t
-          (let* ((name    (and (match-beginning 2)
+          (let* (;; Group 2: full text between { and } (e.g. "name|opt1|opt2")
+                 (content (and (match-beginning 2)
                                (match-string-no-properties 2 template-string)))
-                 (opts    (and (match-beginning 3)
-                               (match-string-no-properties 3 template-string)))
-                 (suf4    (and (match-beginning 4)
-                               (let ((s (match-string-no-properties 4 template-string)))
+                 ;; Group 3: optional suffix after } (e.g. "p" in %^{name}p)
+                 (suf3    (and (match-beginning 3)
+                               (let ((s (match-string-no-properties 3 template-string)))
                                  (when (> (length s) 0) s))))
-                 (suf5    (and (match-beginning 5)
-                               (match-string-no-properties 5 template-string)))
-                 (suffix  (or suf4 suf5 ""))
+                 ;; Group 4: suffix for bare %^G-style prompts
+                 (suf4    (and (match-beginning 4)
+                               (match-string-no-properties 4 template-string)))
+                 (suffix  (or suf3 suf4 ""))
                  (type    (pcase suffix
                             ("g"          "tags_local")
                             ("G"          "tags_global")
@@ -54,9 +57,13 @@ possibly empty).  Returns nil for non-string inputs."
                             ("C"          "clipboard")
                             ("L"          "link")
                             (_            "text")))
+                 ;; Split content by | to get name and completion options
+                 (parts   (when (and content (> (length content) 0))
+                            (split-string content "|" t)))
+                 (name    (car parts))
                  (completions
                   (when (string= type "text")
-                    (if opts (vconcat (split-string opts "|" t)) [])))
+                    (if (cdr parts) (vconcat (cdr parts)) [])))
                  (descriptor
                   (append
                    `((type . ,type))
