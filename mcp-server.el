@@ -5,7 +5,9 @@
 ;; Author: Claude Code + Rolf Håvard Blindheim<rhblind@gmail.com>
 ;; URL: https://github.com/rhblind/emacs-mcp-server
 ;; Keywords: mcp, protocol, integration, tools
-;; Version: 0.6.0 ;; x-release-please-version
+;; x-release-please-start-version
+;; Version: 0.6.0
+;; x-release-please-end
 ;; Package-Requires: ((emacs "27.1"))
 
 ;; This file is NOT part of GNU Emacs.
